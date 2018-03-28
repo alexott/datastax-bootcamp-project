@@ -1,5 +1,6 @@
 package com.datastax.alexott.bootcamp;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -13,13 +14,11 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.lang3.StringUtils;
 
-import com.datastax.driver.core.BatchStatement;
 import com.datastax.driver.core.BoundStatement;
 import com.datastax.driver.core.PreparedStatement;
-import com.datastax.driver.core.QueryOptions;
-import com.datastax.driver.core.Statement;
 import com.datastax.driver.dse.DseCluster;
 import com.datastax.driver.dse.DseSession;
+import com.datastax.driver.dse.geometry.Point;
 import com.datastax.driver.extras.codecs.jdk8.InstantCodec;
 import com.github.javafaker.Address;
 import com.github.javafaker.Faker;
@@ -35,11 +34,13 @@ public class DataLoader {
 	final static AtomicLong runningQueries = new AtomicLong(0);
 
 	static void waitForQueries() {
+		if (runningQueries.get() < 10000)
+			return;
 		int cnt = 0;
-		while(runningQueries.get() > 0) {
+		while (runningQueries.get() > 0) {
 			cnt += 1;
 			try {
-				Thread.sleep(100);
+				Thread.sleep(200);
 			} catch (InterruptedException e) {
 			}
 			if (cnt > 100) {
@@ -48,7 +49,7 @@ public class DataLoader {
 			}
 		}
 	}
-	
+
 	public static void main(String[] args) {
 		DseCluster cluster = DseCluster.builder().addContactPoint("127.0.0.1").build();
 		cluster.getConfiguration().getCodecRegistry().register(InstantCodec.instance);
@@ -56,17 +57,19 @@ public class DataLoader {
 		DseSession session = cluster.connect("atwaters_inventory");
 
 		PreparedStatement shopInsert = session
-				.prepare("insert into shops (id, url, address, city, state, zip, country, phone)"
-						+ "   values(?, ?, ?, ?, ?, ?, ?, ?);");
+				.prepare("insert into shops (id, url, address, city, state, zip, country, phone, location)"
+						+ "   values(?, ?, ?, ?, ?, ?, ?, ?, ?);");
 
 		Faker faker = new Faker();
 
 		Set<String> tset = new TreeSet<String>();
+		tset.add("USD");
 		while (tset.size() < DataUtils.countries) {
 			tset.add(faker.currency().code());
 		}
 		List<String> currencies = new ArrayList<String>(tset);
 		tset.clear();
+		tset.add("US");
 		while (tset.size() < DataUtils.countries) {
 			tset.add(faker.address().countryCode());
 		}
@@ -74,7 +77,9 @@ public class DataLoader {
 		List<UUID> shopIds = new ArrayList<UUID>(DataUtils.shopCount);
 
 		Executor executor = MoreExecutors.directExecutor();
-		
+
+		Random random = new Random(System.currentTimeMillis());
+
 		// create shops
 		System.out.println("Going to generate shops");
 		for (int i = 0; i < DataUtils.shopCount; i++) {
@@ -82,20 +87,20 @@ public class DataLoader {
 			UUID shopId = DataUtils.getUUID(DataUtils.shopFormat, i);
 			BoundStatement stmt = shopInsert.bind(shopId,
 					String.format("http://atwaters.%s/shop%d", faker.internet().domainSuffix(), i),
-					addr.streetAddress(), addr.city(), addr.stateAbbr(), addr.zipCode(), addr.country(),
-					Sets.newHashSet(faker.phoneNumber().phoneNumber(), faker.phoneNumber().cellPhone()));
+					addr.streetAddress(), addr.city(), addr.stateAbbr(), addr.zipCode(),
+					countries.get(random.nextInt(countries.size())),
+					Sets.newHashSet(faker.phoneNumber().phoneNumber(), faker.phoneNumber().cellPhone()),
+					new Point(random.nextDouble()*180-90, random.nextDouble()*180-90));
 			runningQueries.incrementAndGet();
 			session.executeAsync(stmt).addListener(() -> runningQueries.decrementAndGet(), executor);
 			shopIds.add(shopId);
 		}
 		waitForQueries();
-		
-		Random random = new Random(System.currentTimeMillis());
 
 		// create products
 		PreparedStatement productInsert = session.prepare("insert into inventory (base_sku, sku, upc, available, "
-				+ "tags, urls, rating, title, description, country, price, buy_price, currency)"
-				+ "values (?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
+				+ "tags, urls, rating, rating_count, title, description, country, price, buy_price, currency)"
+				+ "values (?, ?, ?, true, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
 
 		PreparedStatement commentInsert = session.prepare("insert into comments(base_sku, sku, user_id, posted, "
 				+ "user_name, comment, rating) values (?, ?, ?, ?, ?, ?, ?);");
@@ -122,7 +127,7 @@ public class DataLoader {
 			}
 
 			// generate from 5 to 10 comments per item
-			int cnt = 0;
+			int ratingCnt = 0;
 			float totalRating = (float) 0.0;
 			for (int j = 0; j < random.nextInt(6) + 5; j++) {
 				int rating = random.nextInt(5) + 1;
@@ -135,23 +140,28 @@ public class DataLoader {
 						StringUtils.join(faker.lorem().paragraphs(random.nextInt(4) + 1), "\n\n"), rating);
 				runningQueries.incrementAndGet();
 				session.executeAsync(cstmt).addListener(() -> runningQueries.decrementAndGet(), executor);
-				cnt += 1;
+				ratingCnt += 1;
+				totalRating += rating;
 			}
-//			waitForQueries();
+			waitForQueries();
 
-			String product = faker.commerce().productName();
+			// TODO: combine 2 different names + " " + faker.commerce().productName() &
+			// shuffle the words?
+			String product = faker.commerce().productName() + " " + faker.commerce().color() + " "
+					+ faker.commerce().material();
 			String description = product + "\n\n"
 					+ StringUtils.join(faker.lorem().paragraphs(random.nextInt(4) + 1), "\n\n");
-			float rating = totalRating / cnt;
+			float rating = totalRating / ratingCnt;
 			String upc = faker.number().digits(12);
 			for (int j = 0; j < DataUtils.countries; j++) {
 				double price = Double.valueOf(faker.commerce().price(10, 1000));
-				BoundStatement pstmt = productInsert.bind(id, id, upc, tags, urls, rating, product, description,
-						countries.get(j), price, price * 1.15, currencies.get(j));
+				BoundStatement pstmt = productInsert.bind(id, id, upc, tags, urls, rating, ratingCnt, product,
+						description, countries.get(j), BigDecimal.valueOf(price), 
+						BigDecimal.valueOf(price * 1.15), currencies.get(j));
 				runningQueries.incrementAndGet();
 				session.executeAsync(pstmt).addListener(() -> runningQueries.decrementAndGet(), executor);
 			}
-//			waitForQueries();
+			waitForQueries();
 
 			for (UUID shopId : shopIds) {
 				BoundStatement ustmt = counterUpdate.bind((long) random.nextInt(100) + 1, id, shopId);

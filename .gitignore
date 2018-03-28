@@ -1,4 +1,11 @@
-/target/
-/.project
-/.classpath
-/.settings/
+/java/target/
+/java/.project
+/java/.classpath
+/java/.settings/
+/java/.cache-main
+*~
+/scala/target/
+/scala/.project
+/scala/.classpath
+/scala/.settings/
+/scala/.cache-main

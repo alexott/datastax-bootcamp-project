@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.datastax.alexott</groupId>
-  <artifactId>bootcamp</artifactId>
+  <artifactId>bootcamp-gatling</artifactId>
   <version>0.0.1-SNAPSHOT</version>
   <packaging>jar</packaging>
 
@@ -56,6 +56,17 @@
       <artifactId>dse-java-driver-extras</artifactId>
       <version>${dse.java.version}</version>
     </dependency>
+    <dependency>
+      <groupId>com.datastax.gatling.plugin</groupId>
+      <artifactId>gatling-dse-plugin</artifactId>
+      <version>1.1.2-SNAPSHOT</version>
+      <exclusions>
+        <exclusion>
+          <groupId>com.datastax.dse</groupId>
+          <artifactId>dse-java-driver-core</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     
     <dependency>
       <groupId>com.github.javafaker</groupId>
@@ -63,4 +74,61 @@
       <version>0.14</version>
     </dependency>
   </dependencies>
+
+  <build>
+    <sourceDirectory>src/main/scala</sourceDirectory>
+    <testSourceDirectory>src/test/scala</testSourceDirectory>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>3.3.2</version>
+        <configuration>
+          <scalaVersion>2.12.4</scalaVersion>
+          <addScalacArgs>-Ybreak-cycles</addScalacArgs>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+              <goal>testCompile</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-assembly-plugin</artifactId>
+        <version>3.1.0</version>
+        <configuration>
+          <descriptorRefs>
+            <descriptorRef>jar-with-dependencies</descriptorRef>
+          </descriptorRefs>
+        </configuration>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>single</goal>
+            </goals>
+          </execution>
+        </executions>
+        </plugin>
+<!--        <plugin>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>2.3</version>
+          <executions>
+            <execution>
+              <phase>package</phase>
+              <goals>
+                <goal>shade</goal>
+              </goals>
+              <configuration>
+                <shadedArtifactAttached>true</shadedArtifactAttached>
+              </configuration>
+            </execution>
+          </executions>
+        </plugin> -->
+    </plugins>
+  </build>
 </project>
