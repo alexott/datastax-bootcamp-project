@@ -106,7 +106,7 @@ public class DataLoader {
 				+ "user_name, comment, rating) values (?, ?, ?, ?, ?, ?, ?);");
 
 		PreparedStatement counterUpdate = session
-				.prepare("UPDATE inv_counters SET cnt = cnt + ? WHERE sku = ? AND shop = ?");
+				.prepare("insert into inv_counters(cnt, sku, shop) values(?,?,?)");
 
 		Set<String> tags = new HashSet<String>(TAGS.length);
 		List<String> urls = new ArrayList<String>(MAX_URLS);
@@ -164,7 +164,7 @@ public class DataLoader {
 			waitForQueries();
 
 			for (UUID shopId : shopIds) {
-				BoundStatement ustmt = counterUpdate.bind((long) random.nextInt(100) + 1, id, shopId);
+				BoundStatement ustmt = counterUpdate.bind(random.nextInt(100) + 1, id, shopId);
 				runningQueries.incrementAndGet();
 				session.executeAsync(ustmt).addListener(() -> runningQueries.decrementAndGet(), executor);
 			}

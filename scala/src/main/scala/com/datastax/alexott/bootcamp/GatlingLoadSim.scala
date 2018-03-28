@@ -79,11 +79,18 @@ class GatlingLoadSim extends Simulation
 
   val random = new util.Random
 
+  val faker = new Faker()
+  
+  def getProductName(): String = {
+    faker.commerce().productName().split(' ')(1)
+  }
+
   val feeder = Iterator.continually( 
       // this feader will "feed" random data into our Sessions
       Map(
           "user_id" -> getUUID(userFormat, random.nextInt(usersCount)),
-          "mpage_item_start" -> random.nextInt(itemsCount)
+          "mpage_item_start" -> random.nextInt(itemsCount),
+          "shop_id" -> getUUID(userFormat, random.nextInt(usersCount))
           ))
     
   val insertCL = ConsistencyLevel.LOCAL_QUORUM
@@ -93,6 +100,9 @@ class GatlingLoadSim extends Simulation
   val getItemPrepared = dseSession.prepare("select title, price, urls, rating, rating_count from atwaters_inventory.inventory where sku = ? AND country = 'US';")
   val getSearchItemPrepared = dseSession.prepare("select title, price, urls, rating, rating_count from atwaters_inventory.inventory where solr_query = ? limit 10")
   val getCommentsPrepared = dseSession.prepare("select * from atwaters_inventory.comments where base_sku = ? limit 100")
+  val getItemAvailabilityPrepared = dseSession.prepare("select * from atwaters_inventory.inv_counters where sku = ? and shop = ?")
+  val addItemToBusketPrepared = dseSession.prepare("insert into atwaters_usa.cart(user_id, sku, updated, title, currency, price) " 
+      + " values(?, ?, toTimestamp(now()), ?, 'USD', ?) if not exists")
   
   val httpConf = http
     .baseURL("http://127.0.0.1:8983")
@@ -101,12 +111,10 @@ class GatlingLoadSim extends Simulation
     .userAgentHeader("Mozilla/5.0 (Windows NT 5.1; rv:31.0) Gecko/20100101 Firefox/31.0")
   
   def getItem(item: Int): ChainBuilder = {
-    group("getMainPageItem")(
-        exec(cql("getMainPageItem")
+        exec(cql("getItemInfoShort")
           .executePrepared(getItemPrepared)
           .withParams(getUUID(itemFormat, item))
           .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
-     )
   }
   
   def doLoadMainPage(): ChainBuilder = {
@@ -115,25 +123,18 @@ class GatlingLoadSim extends Simulation
            .executePrepared(getItemsCountPrepared)
            .withParams(List("user_id"))
            .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
-           .repeat(mainPageItems)(getItem(random.nextInt(itemsCount)))
+           .exec(Iterator.fill(mainPageItems)(getItem(random.nextInt(itemsCount))))
        )
     }
-  
-  val faker = new Faker()
-  
-  def getProductName(): String = {
-    faker.commerce().productName().split(' ')(1)
-  }
-  
+    
   def getRandomMs(limit: Int): FiniteDuration = {
-    FiniteDuration(100*random.nextInt(limit), TimeUnit.MILLISECONDS)
+    FiniteDuration(50*random.nextInt(limit), TimeUnit.MILLISECONDS)
   }
   
-  // TODO: add fetching of comments
   def getItemPage(item: Int): ChainBuilder = {
     val uuid = getUUID(itemFormat, item)
     group("getItemPage")(
-        exec(cql("getPageItem")
+        exec(cql("getItemInfo")
           .executePrepared(getItemPrepared)
           .withParams(uuid)
           .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
@@ -145,30 +146,58 @@ class GatlingLoadSim extends Simulation
           .executePrepared(getCommentsPrepared)
           .withParams(uuid)
           .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
-          
      )
   }
   
-  def doSearch(): ChainBuilder = {
+  def doAddItemToBusket(item: Int): ChainBuilder = {
+    val uuid = getUUID(itemFormat, item)
+    val user_id = uuid // how to get user ID from session?
+        exec(cql("addItemToBusket")
+          .executePrepared(addItemToBusketPrepared)
+          .withParams(user_id, uuid, faker.commerce().productName(), 
+              java.math.BigDecimal.valueOf(random.nextDouble()*100))
+          .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
+  }
+  
+  def checkItemAvailable(item: Int): ChainBuilder = {
+    val uuid = getUUID(itemFormat, item)
+    val shop_id = uuid // fetch the shop ID from session
+    
+        exec(cql("checkItemAvailable")
+          .executePrepared(getItemAvailabilityPrepared)
+          .withParams(uuid, shop_id)
+          .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
+     
+  }
+  
+  def doSearch(doBuy: Boolean): ChainBuilder = {
     group("DoSearch")(
       repeat(numSuggestions)(
         exec(http("suggestion")
          .get("/solr/atwaters_inventory.inventory/suggest?suggest=true&suggest.dictionary=titleSuggester&suggest.q="
              + random.nextString(4) + "&suggest.cfq=US&wt=json"))
-         .pause(getRandomMs(2)))
-       .pause(getRandomMs(3))
+//         .pause(getRandomMs(2))
+        )
+//       .pause(getRandomMs(3))
        .exec(cql("GetSearchItems")
               .executePrepared(getSearchItemPrepared)
               .withParams("title:"+ getProductName() + " AND country:US")
               .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
           )
+       .exec(Iterator.fill(itemsPerSearch)(checkItemAvailable(random.nextInt(itemsCount))))
        .exec(cql("getItemsCount")
            .executePrepared(getItemsCountPrepared)
            .withParams(List("user_id"))
            .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
-       .pause(getRandomMs(9))
-       .repeat(itemsPerSearch)(group("CheckItem")(
-           getItemPage(random.nextInt(itemsCount)).pause(getRandomMs(9))))
+//       .pause(getRandomMs(5))
+       .exec(Iterator.fill(itemsPerSearch)(getItemPage(random.nextInt(itemsCount))))
+       .doIf(SessionExpression(s => doBuy && random.nextInt(10) < 4))(doAddItemToBusket(random.nextInt(itemsCount)))
+  }
+  
+  def doCheckout(): ChainBuilder = {
+    group("DoCheckout")(
+        pause(FiniteDuration(1, TimeUnit.MILLISECONDS))
+    )
   }
   
   val scnNotBuyingUser = scenario("NotBuyingUser").repeat(1)
@@ -176,20 +205,38 @@ class GatlingLoadSim extends Simulation
     feed(feeder)
       .group("NotBuyingUser")(
           exec(doLoadMainPage())
-          .repeat(numSearches)(doSearch())
+          .repeat(numSearches/2)(doSearch(false))
+      )
+  }
+  
+  val scnBuyingUser = scenario("BuyingUser").repeat(1)
+  {
+    feed(feeder)
+      .group("BuyingUser")(
+          exec(doLoadMainPage())
+          .repeat(numSearches)(doSearch(true))
+          .exec(doCheckout)
       )
   }
   
   val rampUpTime = FiniteDuration(java.lang.Long.getLong("rampUpTime", 1), TimeUnit.MINUTES)
   val testDuration = FiniteDuration(java.lang.Long.getLong("testDuration", 5), TimeUnit.MINUTES)
-  val concurrentSessionCount: Int = Integer.getInteger("concurrentSessionCount", 100)
-  val usersPerSecond = concurrentSessionCount.asInstanceOf[Double]
+  val concurrentSessionCount: Int = Integer.getInteger("concurrentSessionCount", 30)
+  val notBuyingUsersPerSecond = concurrentSessionCount.asInstanceOf[Double]
+  val buyingUsersPerSecond = notBuyingUsersPerSecond / 10
   val rampUpPerSec = concurrentSessionCount.asInstanceOf[Double] / 10
 
   
   setUp(scnNotBuyingUser.inject(
-    rampUsersPerSec(usersPerSecond/10) to (usersPerSecond) during testDuration
-  )
+      rampUsersPerSec(notBuyingUsersPerSecond/10) to notBuyingUsersPerSecond during rampUpTime, 
+      nothingFor(20 seconds),
+      constantUsersPerSec(notBuyingUsersPerSecond) during testDuration
+    ),
+    scnBuyingUser.inject(
+      rampUsersPerSec(buyingUsersPerSecond/10) to buyingUsersPerSecond during rampUpTime, 
+      nothingFor(20 seconds),
+      constantUsersPerSec(buyingUsersPerSecond) during testDuration
+    )
   ).protocols(cqlConfig).protocols(httpConf)
 
   after(cluster.close())
