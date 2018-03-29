@@ -94,10 +94,11 @@ class GatlingLoadSim extends Simulation
       // this feader will "feed" random data into our Sessions
       Map(
           "user_id" -> getUUID(userFormat, rand.nextInt(usersCount)),
-//          "mpage_item_start" -> random.nextInt(itemsCount),
+          "mpage_item_start" -> random.nextInt(itemsCount),
+          "item_id" -> getUUID(itemFormat, random.nextInt(itemsCount)),
           "shop_id" -> getUUID(shopFormat, rand.nextInt(usersCount)),
-//          "prod_name_part" -> getProductNamePart(),
-//          "prod_name_query" -> ("{\"q\":\"title:\\\"" + getProductName() + "\\\"\",\"fq\":\"country:US\"}"),
+          "prod_name_part" -> getProductNamePart(),
+          "prod_name_query" -> ("{\"q\":\"title:\\\"" + getProductName() + "\\\"\",\"fq\":\"country:US\"}"),
           "country" -> "US"
           ))
     
@@ -105,7 +106,7 @@ class GatlingLoadSim extends Simulation
   val readCL = ConsistencyLevel.LOCAL_QUORUM
 
   val getItemsCountPrepared = dseSession.prepare("select items_count, updated from atwaters_usa.cart where user_id = ? limit 1;")
-  val getItemPrepared = dseSession.prepare("select title, price, urls, rating, rating_count from atwaters_inventory.inventory where sku = ? AND country = 'US';")
+  val getItemPrepared = dseSession.prepare("select title, price, urls, rating, rating_count from atwaters_inventory.inventory where sku = ? limit 1;")
   val getSearchItemPrepared = dseSession.prepare("select title, price, urls, rating, rating_count from atwaters_inventory.inventory where solr_query = ? limit 10")
   val getCommentsPrepared = dseSession.prepare("select * from atwaters_inventory.comments where base_sku = ? limit 100")
   val getItemAvailabilityPrepared = dseSession.prepare("select * from atwaters_inventory.inv_counters where sku = ? and shop = ?")
@@ -189,7 +190,7 @@ class GatlingLoadSim extends Simulation
 //       .pause(getRandomMs(3))
        .exec(cql("GetSearchItems")
               .executePrepared(getSearchItemPrepared)
-              .withParams("title:"+ getProductName() + " AND country:US")
+              .withParams(List("prod_name_query"))
               .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
        .exec(Iterator.fill(itemsPerSearch)(checkItemAvailable(random.nextInt(itemsCount))))
        .exec(cql("getItemsCount")
@@ -208,7 +209,7 @@ class GatlingLoadSim extends Simulation
     )
   }
   
-  val scnNotBuyingUser = scenario("NotBuyingUser").repeat(100)
+  val scnNotBuyingUser = scenario("NotBuyingUser").repeat(20)
   {
     feed(feeder)
       .group("NotBuyingUser")(
@@ -217,7 +218,7 @@ class GatlingLoadSim extends Simulation
       )
   }
   
-  val scnBuyingUser = scenario("BuyingUser").repeat(1)
+  val scnBuyingUser = scenario("BuyingUser").repeat(20)
   {
     feed(feeder)
       .group("BuyingUser")(
@@ -227,7 +228,7 @@ class GatlingLoadSim extends Simulation
       )
   }
   
-  val scnSearchOnlyUser = scenario("SearchOnlyUser").repeat(10)
+  val scnSearchOnlyUser = scenario("SearchOnlyUser").repeat(20)
   {
     feed(feeder)
       .group("SearchOnly")(
@@ -252,7 +253,18 @@ class GatlingLoadSim extends Simulation
   {
     feed(feeder)
       .group("LoadMainPageOnly")(
-          exec(doLoadMainPage())
+          doLoadMainPage()
+      )
+  }
+  
+  val scnItemOnly = scenario("ItemOnly").repeat(100)
+  {
+    feed(feeder)
+      .group("GetOnly")(
+          exec(cql("getItemInfo")
+          .executePrepared(getItemPrepared)
+          .withParams(List("item_id"))
+          .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
       )
   }
   
@@ -260,7 +272,7 @@ class GatlingLoadSim extends Simulation
   {
     feed(feeder)
       .group("CheckItemOnly")(
-          exec(checkItemAvailable(random.nextInt(itemsCount)))
+          checkItemAvailable(random.nextInt(itemsCount))
       )
   }
   
@@ -268,7 +280,7 @@ class GatlingLoadSim extends Simulation
   {
     feed(feeder)
       .group("AddItemOnly")(
-          exec(doAddItemToBusket(random.nextInt(itemsCount)))
+          doAddItemToBusket(random.nextInt(itemsCount))
       )
   } 
   
@@ -304,7 +316,10 @@ class GatlingLoadSim extends Simulation
 /*    scnCheckItemOnly.inject(
       constantUsersPerSec(buyingUsersPerSecond) during testDuration
     )*/
-   scnAddItemOnly.inject(
+/*   scnAddItemOnly.inject(
+      constantUsersPerSec(buyingUsersPerSecond) during testDuration
+    )*/
+    scnItemOnly.inject(
       constantUsersPerSec(buyingUsersPerSecond) during testDuration
     )
   ).protocols(cqlConfig).protocols(httpConf)
