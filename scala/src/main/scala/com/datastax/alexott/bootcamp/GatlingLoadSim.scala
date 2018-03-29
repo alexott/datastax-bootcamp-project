@@ -84,13 +84,21 @@ class GatlingLoadSim extends Simulation
   def getProductName(): String = {
     faker.commerce().productName().split(' ')(1)
   }
+  
+  def getProductNamePart(): String = {
+    val s = getProductName()
+    s.substring(0, Math.min(4, s.length()))
+  }
 
   val feeder = Iterator.continually( 
       // this feader will "feed" random data into our Sessions
       Map(
-          "user_id" -> getUUID(userFormat, random.nextInt(usersCount)),
-          "mpage_item_start" -> random.nextInt(itemsCount),
-          "shop_id" -> getUUID(userFormat, random.nextInt(usersCount))
+          "user_id" -> getUUID(userFormat, rand.nextInt(usersCount)),
+//          "mpage_item_start" -> random.nextInt(itemsCount),
+          "shop_id" -> getUUID(shopFormat, rand.nextInt(usersCount)),
+//          "prod_name_part" -> getProductNamePart(),
+//          "prod_name_query" -> ("{\"q\":\"title:\\\"" + getProductName() + "\\\"\",\"fq\":\"country:US\"}"),
+          "country" -> "US"
           ))
     
   val insertCL = ConsistencyLevel.LOCAL_QUORUM
@@ -106,9 +114,9 @@ class GatlingLoadSim extends Simulation
   
   val httpConf = http
     .baseURL("http://127.0.0.1:8983")
-    .doNotTrackHeader("1")
     .acceptEncodingHeader("gzip, deflate")
     .userAgentHeader("Mozilla/5.0 (Windows NT 5.1; rv:31.0) Gecko/20100101 Firefox/31.0")
+    .maxConnectionsPerHost(500)
   
   def getItem(item: Int): ChainBuilder = {
         exec(cql("getItemInfoShort")
@@ -151,7 +159,7 @@ class GatlingLoadSim extends Simulation
   
   def doAddItemToBusket(item: Int): ChainBuilder = {
     val uuid = getUUID(itemFormat, item)
-    val user_id = uuid // how to get user ID from session?
+    val user_id = SessionExpression(s => s("user_id").as[UUID])
         exec(cql("addItemToBusket")
           .executePrepared(addItemToBusketPrepared)
           .withParams(user_id, uuid, faker.commerce().productName(), 
@@ -161,12 +169,12 @@ class GatlingLoadSim extends Simulation
   
   def checkItemAvailable(item: Int): ChainBuilder = {
     val uuid = getUUID(itemFormat, item)
-    val shop_id = uuid // fetch the shop ID from session
+    val shop_id = SessionExpression(s => s("shop_id").as[UUID])
     
-        exec(cql("checkItemAvailable")
-          .executePrepared(getItemAvailabilityPrepared)
-          .withParams(uuid, shop_id)
-          .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
+    exec(cql("checkItemAvailable")
+      .executePrepared(getItemAvailabilityPrepared)
+      .withParams(uuid, shop_id)
+      .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
      
   }
   
@@ -183,13 +191,13 @@ class GatlingLoadSim extends Simulation
               .executePrepared(getSearchItemPrepared)
               .withParams("title:"+ getProductName() + " AND country:US")
               .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
-          )
        .exec(Iterator.fill(itemsPerSearch)(checkItemAvailable(random.nextInt(itemsCount))))
        .exec(cql("getItemsCount")
            .executePrepared(getItemsCountPrepared)
            .withParams(List("user_id"))
            .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
 //       .pause(getRandomMs(5))
+       )
        .exec(Iterator.fill(itemsPerSearch)(getItemPage(random.nextInt(itemsCount))))
        .doIf(SessionExpression(s => doBuy && random.nextInt(10) < 4))(doAddItemToBusket(random.nextInt(itemsCount)))
   }
@@ -200,7 +208,7 @@ class GatlingLoadSim extends Simulation
     )
   }
   
-  val scnNotBuyingUser = scenario("NotBuyingUser").repeat(1)
+  val scnNotBuyingUser = scenario("NotBuyingUser").repeat(100)
   {
     feed(feeder)
       .group("NotBuyingUser")(
@@ -219,15 +227,60 @@ class GatlingLoadSim extends Simulation
       )
   }
   
+  val scnSearchOnlyUser = scenario("SearchOnlyUser").repeat(10)
+  {
+    feed(feeder)
+      .group("SearchOnly")(
+          exec(cql("GetSearchItems")
+              .executePrepared(getSearchItemPrepared)
+              .withParams(List("prod_name_query")) //SessionExpression(s => s("prod_name_query").as[String])
+              .consistencyLevel(ConsistencyLevel.LOCAL_ONE))
+      )
+  }
+  
+  val scnOnlySuggestionsUser = scenario("OnlySuggestionsUser").repeat(10)
+  {
+    feed(feeder)
+      .group("SuggestionsOnly")(
+        exec(http("suggestion")
+         .get("/solr/atwaters_inventory.inventory/suggest?suggest=true&suggest.dictionary=titleSuggester&suggest.q=" +
+             SessionExpression(s => s("prod_name_part").as[String]) + "&suggest.cfq=US&wt=json"))
+      )
+  }
+  
+  val scnLoadMainPageOnly = scenario("LoadMainPageOnly").repeat(100)
+  {
+    feed(feeder)
+      .group("LoadMainPageOnly")(
+          exec(doLoadMainPage())
+      )
+  }
+  
+  val scnCheckItemOnly = scenario("CheckItemOnly").repeat(100)
+  {
+    feed(feeder)
+      .group("CheckItemOnly")(
+          exec(checkItemAvailable(random.nextInt(itemsCount)))
+      )
+  }
+  
+  val scnAddItemOnly = scenario("AddItemOnly").repeat(50)
+  {
+    feed(feeder)
+      .group("AddItemOnly")(
+          exec(doAddItemToBusket(random.nextInt(itemsCount)))
+      )
+  } 
+  
   val rampUpTime = FiniteDuration(java.lang.Long.getLong("rampUpTime", 1), TimeUnit.MINUTES)
   val testDuration = FiniteDuration(java.lang.Long.getLong("testDuration", 5), TimeUnit.MINUTES)
   val concurrentSessionCount: Int = Integer.getInteger("concurrentSessionCount", 30)
   val notBuyingUsersPerSecond = concurrentSessionCount.asInstanceOf[Double]
   val buyingUsersPerSecond = notBuyingUsersPerSecond / 10
   val rampUpPerSec = concurrentSessionCount.asInstanceOf[Double] / 10
-
   
-  setUp(scnNotBuyingUser.inject(
+  setUp(
+/*      scnNotBuyingUser.inject(
       rampUsersPerSec(notBuyingUsersPerSecond/10) to notBuyingUsersPerSecond during rampUpTime, 
       nothingFor(20 seconds),
       constantUsersPerSec(notBuyingUsersPerSecond) during testDuration
@@ -235,6 +288,23 @@ class GatlingLoadSim extends Simulation
     scnBuyingUser.inject(
       rampUsersPerSec(buyingUsersPerSecond/10) to buyingUsersPerSecond during rampUpTime, 
       nothingFor(20 seconds),
+      constantUsersPerSec(buyingUsersPerSecond) during testDuration
+    )*/
+//    scnSearchOnlyUser.inject(
+//      rampUsersPerSec(notBuyingUsersPerSecond/10) to notBuyingUsersPerSecond during rampUpTime, 
+//      nothingFor(20 seconds),
+//      constantUsersPerSec(notBuyingUsersPerSecond) during testDuration
+//    )
+/*    scnOnlySuggestionsUser.inject(
+      constantUsersPerSec(buyingUsersPerSecond) during testDuration
+    )*/
+/*    scnLoadMainPageOnly.inject(
+      constantUsersPerSec(buyingUsersPerSecond) during testDuration
+    )*/
+/*    scnCheckItemOnly.inject(
+      constantUsersPerSec(buyingUsersPerSecond) during testDuration
+    )*/
+   scnAddItemOnly.inject(
       constantUsersPerSec(buyingUsersPerSecond) during testDuration
     )
   ).protocols(cqlConfig).protocols(httpConf)
