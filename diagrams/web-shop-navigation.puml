@@ -1,0 +1,66 @@
+@startuml
+
+hide footbox
+
+actor User as user
+box "Web shop"
+participant "Web shop" as wshop
+participant "Shopping cart\n&checkout" as wcart
+end box
+
+box "DSE"
+participant "Search" as search
+database "Inventory" as inventory
+database "Comments" as comments
+database "Cart" as cart
+database "Counters" as counters
+end box
+
+== Landing at shop ==
+
+user -> wshop: load main page
+activate wshop #brown
+loop count of items on main page
+wshop -> inventory: get info for items on main page
+end
+wshop -> cart: get count of items in cart
+wshop --> user: generated page
+deactivate wshop
+
+== Search for items ==
+
+loop N times
+user -> wshop: starts typing
+loop 1-3 times
+wshop -> search: ask for suggestions
+search --> wshop: list of suggestions
+wshop --> user: list of suggestions
+end
+user -> wshop: select suggestion\nor enter query
+activate wshop #brown
+wshop -> search: query for matching items
+search --> wshop: matching items
+loop items per search page
+wshop -> inventory: get item info
+wshop -> counters: fetch availability information
+end
+wshop -> cart: get count of items in cart
+wshop --> user: page with search results
+deactivate wshop
+loop Open information about item: X times
+user -> wshop: open item info
+activate wshop #brown
+wshop -> inventory: fetch item info
+wshop -> counters: fetch availability information
+wshop -> comments: fetch comments for item
+wshop -> cart: get count of items in cart
+wshop --> user: product page
+deactivate wshop
+... user is reading information about item ...
+user -> wcart: add item to cart
+wcart -> cart: add item
+wcart --> user: confirm addition
+end
+end
+
+@enduml

@@ -20,7 +20,9 @@
     (html5
      [:head
       [:title "Atwater's"]
-      (include-css "/css/screen.css")]
+      (include-css "/css/screen.css")
+      [:script {:src "/js/suggest.js"}]
+      ]
 
      [:body
       [:h1 "Welcome to Atwater's"]

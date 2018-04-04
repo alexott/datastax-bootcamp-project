@@ -1,0 +1,66 @@
+@startuml
+
+hide footbox
+
+actor User as user
+box "Web shop"
+participant "Web shop" as wshop
+participant "Shopping cart\n&checkout" as wcart
+end box
+
+box "DSE"
+database "Inventory" as inventory
+database "Cart" as cart
+database "User data" as udata
+database "Counters" as counters
+end box
+
+participant "Order processing" as orders
+
+== View shopping cart ==
+
+user -> wshop: open cart
+wshop -> wcart: generate cart
+wcart -> cart: get current cart
+cart --> wcart: items in cart
+wcart --> user: cart content
+loop * times
+alt modifying quantity
+user -> wcart: change quantity of item
+wcart -> cart: update quantity
+wcart --> user: updated cart
+else removing item
+user -> wcart: remove item
+wcart -> cart: remove item
+wcart --> user: updated cart
+end
+end
+
+== Checkout ==
+
+user -> wcart: start checkout process
+note right
+  this is simplified version correct way will
+  be that items are "locked" during checkout process
+end note
+activate wcart #brown
+loop count(items) times
+wcart -> counters: check availability
+counters -> wcart: number of items
+end
+wcart -> udata: "fetch user's data"
+wcart --> user: page with "confirm" button
+deactivate wcart
+
+user -> wcart: press "confirm" button
+activate wcart #brown
+loop count(items) times
+wcart -> counters: decrease items count
+end
+wcart -> orders: send order information
+orders --> wcart: order confirmation
+wcart --> user: page with confirmation
+deactivate wcart
+orders --> user: email with confirmation
+
+@enduml
