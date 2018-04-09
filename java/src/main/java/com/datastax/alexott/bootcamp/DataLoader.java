@@ -8,13 +8,13 @@ import java.util.Random;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
-import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.lang3.StringUtils;
 
 import com.datastax.driver.core.BoundStatement;
+import com.datastax.driver.core.HostDistance;
+import com.datastax.driver.core.PoolingOptions;
 import com.datastax.driver.core.PreparedStatement;
 import com.datastax.driver.dse.DseCluster;
 import com.datastax.driver.dse.DseSession;
@@ -23,7 +23,6 @@ import com.datastax.driver.extras.codecs.jdk8.InstantCodec;
 import com.github.javafaker.Address;
 import com.github.javafaker.Faker;
 import com.google.common.collect.Sets;
-import com.google.common.util.concurrent.MoreExecutors;
 
 public class DataLoader {
 
@@ -31,30 +30,18 @@ public class DataLoader {
 			"home" };
 	private static int MAX_URLS = 10;
 	private static String BASE_URL = "http://cdn.images.atwaters.com/";
-	final static AtomicLong runningQueries = new AtomicLong(0);
 
-	static void waitForQueries() {
-		if (runningQueries.get() < 10000)
-			return;
-		int cnt = 0;
-		while (runningQueries.get() > 0) {
-			cnt += 1;
-			try {
-				Thread.sleep(200);
-			} catch (InterruptedException e) {
-			}
-			if (cnt > 100) {
-				System.out.println("We're waiting already more than " + cnt + " retries");
-				throw new RuntimeException("Waiting too long");
-			}
-		}
-	}
-
-	public static void main(String[] args) {
+	public static void main(String[] args) throws InterruptedException {
 		DseCluster cluster = DseCluster.builder().addContactPoint("127.0.0.1").build();
 		cluster.getConfiguration().getCodecRegistry().register(InstantCodec.instance);
+		
+		PoolingOptions poolingOptions = cluster.getConfiguration().getPoolingOptions();
+		poolingOptions.setMaxRequestsPerConnection(HostDistance.LOCAL, 32768)
+				.setMaxRequestsPerConnection(HostDistance.REMOTE, 2000);
 
 		DseSession session = cluster.connect("atwaters_inventory");
+
+		SessionLimiter sl = new SessionLimiter(session);
 
 		PreparedStatement shopInsert = session
 				.prepare("insert into shops (id, url, address, city, state, zip, country, phone, location)"
@@ -76,8 +63,6 @@ public class DataLoader {
 		List<String> countries = new ArrayList<String>(tset);
 		List<UUID> shopIds = new ArrayList<UUID>(DataUtils.shopCount);
 
-		Executor executor = MoreExecutors.directExecutor();
-
 		Random random = new Random(System.currentTimeMillis());
 
 		// create shops
@@ -90,12 +75,10 @@ public class DataLoader {
 					addr.streetAddress(), addr.city(), addr.stateAbbr(), addr.zipCode(),
 					countries.get(random.nextInt(countries.size())),
 					Sets.newHashSet(faker.phoneNumber().phoneNumber(), faker.phoneNumber().cellPhone()),
-					new Point(random.nextDouble()*180-90, random.nextDouble()*180-90));
-			runningQueries.incrementAndGet();
-			session.executeAsync(stmt).addListener(() -> runningQueries.decrementAndGet(), executor);
+					new Point(random.nextDouble() * 180 - 90, random.nextDouble() * 180 - 90));
+			sl.executeAsync(stmt);
 			shopIds.add(shopId);
 		}
-		waitForQueries();
 
 		// create products
 		PreparedStatement productInsert = session.prepare("insert into inventory (base_sku, sku, upc, available, "
@@ -105,8 +88,7 @@ public class DataLoader {
 		PreparedStatement commentInsert = session.prepare("insert into comments(base_sku, sku, user_id, posted, "
 				+ "user_name, comment, rating) values (?, ?, ?, ?, ?, ?, ?);");
 
-		PreparedStatement counterUpdate = session
-				.prepare("insert into inv_counters(cnt, sku, shop) values(?,?,?)");
+		PreparedStatement counterUpdate = session.prepare("insert into inv_counters(cnt, sku, shop) values(?,?,?)");
 
 		Set<String> tags = new HashSet<String>(TAGS.length);
 		List<String> urls = new ArrayList<String>(MAX_URLS);
@@ -138,12 +120,10 @@ public class DataLoader {
 								.plusSeconds(random.nextInt(86400)),
 						faker.name().fullName(),
 						StringUtils.join(faker.lorem().paragraphs(random.nextInt(4) + 1), "\n\n"), rating);
-				runningQueries.incrementAndGet();
-				session.executeAsync(cstmt).addListener(() -> runningQueries.decrementAndGet(), executor);
+				sl.executeAsync(cstmt);
 				ratingCnt += 1;
 				totalRating += rating;
 			}
-			waitForQueries();
 
 			// TODO: combine 2 different names + " " + faker.commerce().productName() &
 			// shuffle the words?
@@ -156,19 +136,15 @@ public class DataLoader {
 			for (int j = 0; j < DataUtils.countries; j++) {
 				double price = Double.valueOf(faker.commerce().price(10, 1000));
 				BoundStatement pstmt = productInsert.bind(id, id, upc, tags, urls, rating, ratingCnt, product,
-						description, countries.get(j), BigDecimal.valueOf(price), 
-						BigDecimal.valueOf(price * 1.15), currencies.get(j));
-				runningQueries.incrementAndGet();
-				session.executeAsync(pstmt).addListener(() -> runningQueries.decrementAndGet(), executor);
+						description, countries.get(j), BigDecimal.valueOf(price), BigDecimal.valueOf(price * 1.15),
+						currencies.get(j));
+				sl.executeAsync(pstmt);
 			}
-			waitForQueries();
 
 			for (UUID shopId : shopIds) {
 				BoundStatement ustmt = counterUpdate.bind(random.nextInt(100) + 1, id, shopId);
-				runningQueries.incrementAndGet();
-				session.executeAsync(ustmt).addListener(() -> runningQueries.decrementAndGet(), executor);
+				sl.executeAsync(ustmt);
 			}
-			waitForQueries();
 
 			if ((i + 1) % 100 == 0) {
 				long end = System.currentTimeMillis();
@@ -178,6 +154,7 @@ public class DataLoader {
 		}
 
 		System.out.println("Loading is finished...");
+		sl.waitForFinish();
 
 		session.close();
 		cluster.close();
