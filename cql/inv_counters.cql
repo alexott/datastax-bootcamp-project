@@ -4,7 +4,7 @@ drop table if exists inv_counters;
 create table inv_counters (
    sku uuid,
    shop uuid,
-   cnt counter,
+   cnt int,
 
    primary key (sku, shop)
 );

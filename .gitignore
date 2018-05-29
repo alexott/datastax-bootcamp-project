@@ -10,3 +10,5 @@
 /scala/.settings/
 /scala/.cache-main
 /rest/.nrepl-port
+/java/.idea/
+/java/bootcamp.iml
