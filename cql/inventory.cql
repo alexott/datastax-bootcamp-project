@@ -43,7 +43,7 @@ CREATE SEARCH INDEX ON atwaters_inventory.inventory WITH COLUMNS upc, available,
     AND OPTIONS { reindex : false };
 ALTER SEARCH INDEX SCHEMA ON atwaters_inventory.inventory ADD types.fieldtype[@class='org.apache.solr.schema.TextField', @name='TextField']
 //WITH '{"analyzer":{"class":"org.apache.lucene.analysis.standard.StandardAnalyzer"}}';
-WITH '{"analyzer":{"tokenizer":{"class":"solr.StandardTokenizerFactory"}, "filter":[{"class": "solr.StandardFilterFactory"}, {"class": "solr.LowerCaseFilterFactory"},{"class": "solr.StopFilterFactory"}]}}';
+WITH '{"analyzer":{"tokenizer": {"class":"solr.StandardTokenizerFactory"}}, "filter":[{"class": "solr.StandardFilterFactory"}, {"class": "solr.LowerCaseFilterFactory"},{"class": "solr.StopFilterFactory"}]}';
 ALTER SEARCH INDEX SCHEMA ON atwaters_inventory.inventory SET field[@name='title']@type='TextField';
 ALTER SEARCH INDEX SCHEMA ON atwaters_inventory.inventory SET field[@name='description']@type='TextField';
 ALTER SEARCH INDEX SCHEMA ON atwaters_inventory.inventory ADD fields.field[@name='metainfo_text', @type='TextField', @indexed='true'];
