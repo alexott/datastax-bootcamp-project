@@ -32,7 +32,7 @@ public class DataLoader {
 	private static String BASE_URL = "http://cdn.images.atwaters.com/";
 
 	public static void main(String[] args) throws InterruptedException {
-		DseCluster cluster = DseCluster.builder().addContactPoint("127.0.0.1").build();
+		DseCluster cluster = DseCluster.builder().addContactPoint(System.getProperty("contactPoint", "127.0.0.1")).build();
 		cluster.getConfiguration().getCodecRegistry().register(InstantCodec.instance);
 		
 		PoolingOptions poolingOptions = cluster.getConfiguration().getPoolingOptions();
